@@ -281,17 +281,26 @@ impl CompletionMenu {
     }
 
     fn select_item(&mut self, item: &CompletionItem, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = {
+            let editor = self.editor.read(cx);
+            (editor.edit_version(), editor.text.clone())
+        };
+        self.select_item_with_snapshot(item, snapshot, window, cx);
+    }
+
+    fn select_item_with_snapshot(
+        &mut self,
+        item: &CompletionItem,
+        (version, snapshot): (u64, ropey::Rope),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let item = item.clone();
         let mut range = self.trigger_start_offset.unwrap_or(self.offset)..self.offset;
-
         let editor = self.editor.clone();
         // Everything below is measured against the text as it is now; the
         // resolve can take a round trip to the server, and whatever is typed
         // meanwhile is carried in through the editor's edit log.
-        let (version, snapshot) = {
-            let editor = self.editor.read(cx);
-            (editor.edit_version(), editor.text.clone())
-        };
 
         cx.spawn_in(window, async move |_, cx| {
             // An item that has not said which imports it needs may say so
@@ -388,6 +397,7 @@ impl CompletionMenu {
     pub(crate) fn handle_action(
         &mut self,
         action: Box<dyn Action>,
+        input: &InputState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -396,8 +406,8 @@ impl CompletionMenu {
         }
 
         cx.propagate();
-        if input::Enter::is_primary(&*action) {
-            self.on_action_enter(window, cx);
+        if input::Enter::is_primary(&*action) || action.partial_eq(&input::IndentInline) {
+            self.on_action_enter(input, window, cx);
         } else if action.partial_eq(&input::Escape) {
             self.on_action_escape(window, cx);
         } else if action.partial_eq(&input::MoveUp) {
@@ -411,11 +421,18 @@ impl CompletionMenu {
         true
     }
 
-    fn on_action_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_action_enter(&mut self, input: &InputState, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = self.list.read(cx).delegate().selected_item().cloned() else {
             return;
         };
-        self.select_item(&item, window, cx);
+        // Keyboard actions run inside InputState's update. Use that existing
+        // borrow: reading self.editor here would lease the same entity twice.
+        self.select_item_with_snapshot(
+            &item,
+            (input.edit_version(), input.text.clone()),
+            window,
+            cx,
+        );
     }
 
     fn on_action_escape(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -540,6 +557,7 @@ impl Render for CompletionMenu {
                 .when(vertical_layout, |this| this.flex_col())
                 .child(
                     editor_popover("completion-menu", cx)
+                        .debug_selector(|| "completion-menu".into())
                         .max_w(max_width)
                         .min_w(px(120.))
                         .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
@@ -649,7 +667,9 @@ mod tests {
     }
 
     /// A provider whose resolve waits until the test answers it.
-    struct SlowResolve(std::cell::RefCell<Option<futures::channel::oneshot::Receiver<CompletionItem>>>);
+    struct SlowResolve(
+        std::cell::RefCell<Option<futures::channel::oneshot::Receiver<CompletionItem>>>,
+    );
 
     impl crate::input::CompletionProvider for SlowResolve {
         fn completions(
