@@ -222,6 +222,11 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.has_extra_selections()
+            && self.handle_action_for_context_menu(Box::new(IndentInline), window, cx)
+        {
+            return;
+        }
         // First, try to accept inline completion if present. It belongs to
         // one caret; with several, Tab indents them all.
         if self.has_extra_selections() {

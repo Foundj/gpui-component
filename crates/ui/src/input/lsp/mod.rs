@@ -119,7 +119,7 @@ impl InputState {
         match menu {
             ContextMenu::Completion(menu) => {
                 _ = menu.update(cx, |menu, cx| {
-                    handled = menu.handle_action(action, window, cx)
+                    handled = menu.handle_action(action, self, window, cx)
                 });
             }
             ContextMenu::CodeAction(menu) => {
